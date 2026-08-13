@@ -1,4 +1,4 @@
-name: Compose smoke
+name: CI
 
 on:
   push:
@@ -8,6 +8,36 @@ permissions:
   contents: read
 
 jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - run: ./gradlew :backend:test :demo-app:test --no-daemon
+      - run: ./gradlew :backend:bootJar :demo-app:bootJar --no-daemon
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
   smoke:
     runs-on: ubuntu-latest
     steps:
@@ -31,7 +61,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SPRING_BOOT_STATIC_ANALYSIS_DB_PASSWORD: smoke-only-password
-      SPRING_BOOT_STATIC_ANALYSIS_BASE_PATH: /projects/spring-boot-static-analysis/
       PREFIX: /projects/spring-boot-static-analysis
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +97,7 @@ jobs:
             sleep 2
           done
 
-      - name: Verify read-only API
+      - name: Verify the read-only API
         run: |
           curl -fsS "http://127.0.0.1:8080$PREFIX/api/config" \
             | grep -q '"readOnly":true'
@@ -81,13 +110,15 @@ jobs:
             "http://127.0.0.1:8080$PREFIX/api/repositories")
           test "$status" = "405"
 
-      - name: Verify prefixed assets
+      - name: Verify relative assets resolve behind the prefix
         run: |
-          curl -fsS "http://127.0.0.1:8080$PREFIX/" \
-            | grep -o 'src="[^"]*"' | grep -q "$PREFIX/assets/"
-          asset=$(curl -fsS "http://127.0.0.1:8080$PREFIX/" \
-            | grep -o "$PREFIX/assets/[A-Za-z0-9._-]*\.js" | head -1)
-          curl -fsS "http://127.0.0.1:8080$asset" >/dev/null
+          index_html=$(curl -fsS "http://127.0.0.1:8080$PREFIX/")
+          printf '%s\n' "$index_html" | grep -Fq 'src="./assets/'
+          asset=$(printf '%s\n' "$index_html" \
+            | sed -n 's|.*src="\.\(/assets/[^"?]*\.js\)[^"]*".*|\1|p' \
+            | head -1)
+          test -n "$asset"
+          curl -fsS "http://127.0.0.1:8080$PREFIX$asset" >/dev/null
 
       - run: npm run test:e2e
         working-directory: frontend
